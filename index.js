@@ -23,7 +23,7 @@ const openai = new OpenAI(process.env.OPENAI_API_KEY);
 // Retrieve RoboHound and make a thread
 async function main() {
 	const myAssistant = await openai.beta.assistants.retrieve(
-	  ""
+		process.env.ASSISTANT_KEY
 	);
 	console.log(myAssistant.name + " " + myAssistant.model);
 
