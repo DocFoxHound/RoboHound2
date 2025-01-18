@@ -7,6 +7,7 @@ const { Client, Collection, Events, GatewayIntentBits, PermissionFlagsBits } = r
 const dotenv = require('dotenv');
 // Require openai
 const { Configuration, OpenAI } = require("openai");
+const { threadId } = require('node:worker_threads');
 // Require global functions
 const { initPersonalities } = require(path.join(__dirname, "common.js"));
 
@@ -24,21 +25,16 @@ const openai = new OpenAI(process.env.OPENAI_API_KEY);
 // Create a new discord client instance
 const client = new Client({intents: [GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,] });
 
-// Initialize Commands
-client.commands = new Collection();
-const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
-// Initialize command files
-for (const file of commandFiles) {
-	const filePath = path.join(commandsPath, file);
-	const command = require(filePath);
-	// Set a new item in the Collection with the key as the command name and the value as the exported module
-	if ('data' in command && 'execute' in command) {
-		client.commands.set(command.data.name, command);
-	} else {
-		console.log(`[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`);
-	}
-}
+// Retrieve RoboHound and make a thread
+const myAssistant = openai.beta.assistants.retrieve(
+	process.env.ASSISTANT_KEY
+);
+
+// Set channels
+channelIds = process.env?.CHANNELS?.split(',');
+
+//array of threads (one made per channel)
+threadArray = [];
 
 // Create state array
 let state = {
@@ -51,41 +47,73 @@ let state = {
 	slowModeTimer: {}
 };
 
-// Retrieve RoboHound and make a thread
-const myAssistant = await openai.beta.assistants.retrieve(
-	process.env.ASSISTANT_KEY
-);
-
 //create a thread
 async function createThread(){
-	const thread = await openai.beta.threads.create();
-	return(thread);
+	const thread = openai.beta.threads.create();
+	// let threadCombo = new threadAndChannel(channelId, (await thread).id);
+	return((await thread).id);
 }
 
 //TODO: Add discord message to a thread
-async function addMessageToThread(){
-	const message = await openai.beta.threads.messages.create(
-		thread.id,
+async function addMessageToThread(usedChannelId, messageUser, messageContent){
+	const threadChannelPair = threadArray.find(array => array.channelId = usedChannelId);
+	await openai.beta.threads.messages.create(
+		threadChannelPair.threadId,
 		{
 			role: "user",
-			content: "What is your opinion of the IronPoint crew"
+			content: messageUser + ": " + messageContent
 		}
 		);
-		return(message);
 };
 
+//polled response
+async function createAndPollMessage(discordMessage){
+	console.log("Assistant2: " + myAssistant.id)
+	const threadChannelPair = threadArray.find(array => array.channelId = discordMessage.channelId);
+	let run = await openai.beta.threads.runs.createAndPoll(
+		threadChannelPair.threadId,
+		{ 
+		  assistant_id: myAssistant.id,
+		}
+	);
+	if(run.status === 'in_progress'){
+		//TODO: spinny wheel in discord
+		console.log("In Progress...");
+	}
+	if (run.status === 'completed') {
+		const messages = await openai.beta.threads.messages.list(
+		  run.thread_id
+		);
+		for (const message of messages.data.reverse()) {
+		  console.log(`${message.role} > ${message.content[0].text.value}`);
+		  discordMessage.channel.send(message.content[0].text.value);
+		}
+		} else {
+		console.log(run.status);
+	}
+}
 
+//---------------------------------------------------------------------------------//
 
-
-//Event Listeners that keep the bot active and looking for something to respond to
+//Event Listener: login
 client.on('ready', () => {
+	//Create one thread per channel listed in .env
+	channelIds.forEach(async element => {
+		// threadArray.push(createThread(element))
+		threadArray.push({channelId: element, threadId: await createThread()})
+	});
+	console.log("Assistant: " + myAssistant.id)
 	console.log(`Logged in as ${client.user.tag}!`);
 });
+
+//Event Listener: Waiting for messages and actioning them
 client.on('messageCreate', message => {
     if (!message.guild) return; // Ignore DMs
 
-    if (message.mentions.users.has(client.user.id)) {
-        message.channel.send('Hello! How can I help you?');
+    if (message.mentions.users.has(client.user.id)) { //if the user mentions the bot (or replies?)
+		addMessageToThread(message.channelId, message.author.username, message.content); //add the message to the right thread
+		createAndPollMessage(message); //poll and run the message
+		// message.channel.send('Hello! How can I help you?');
     }
 });
 
