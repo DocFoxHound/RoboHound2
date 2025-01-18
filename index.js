@@ -25,27 +25,19 @@ const openai = new OpenAI(process.env.OPENAI_API_KEY);
 // Create a new discord client instance
 const client = new Client({intents: [GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,] });
 
-// Retrieve RoboHound and make a thread
-const myAssistant = openai.beta.assistants.retrieve(
-	process.env.ASSISTANT_KEY
-);
-
 // Set channels
 channelIds = process.env?.CHANNELS?.split(',');
 
 //array of threads (one made per channel)
 threadArray = [];
 
-// Create state array
-let state = {
-	isPaused: false,
-	personalities: [],
-	tokenTimer: null,
-	tokenCount: null,
-	startTime: new Date(),
-	totalTokenCount: 0,
-	slowModeTimer: {}
-};
+// Retrieve RoboHound
+myAssistant = openai.beta.assistants;
+async function retrieveAssistant(){
+	myAssistant = await openai.beta.assistants.retrieve(
+		process.env.ASSISTANT_KEY
+	);
+}
 
 //create a thread
 async function createThread(){
@@ -68,7 +60,6 @@ async function addMessageToThread(usedChannelId, messageUser, messageContent){
 
 //polled response
 async function createAndPollMessage(discordMessage){
-	console.log("Assistant2: " + myAssistant.id)
 	const threadChannelPair = threadArray.find(array => array.channelId = discordMessage.channelId);
 	let run = await openai.beta.threads.runs.createAndPoll(
 		threadChannelPair.threadId,
@@ -95,6 +86,9 @@ async function createAndPollMessage(discordMessage){
 
 //---------------------------------------------------------------------------------//
 
+//retrieve robohound
+retrieveAssistant();
+
 //Event Listener: login
 client.on('ready', () => {
 	//Create one thread per channel listed in .env
@@ -102,7 +96,6 @@ client.on('ready', () => {
 		// threadArray.push(createThread(element))
 		threadArray.push({channelId: element, threadId: await createThread()})
 	});
-	console.log("Assistant: " + myAssistant.id)
 	console.log(`Logged in as ${client.user.tag}!`);
 });
 
