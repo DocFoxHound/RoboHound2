@@ -46,67 +46,93 @@ async function createThread(){
 	return((await thread).id);
 }
 
-//TODO: Add discord message to a thread
+//multiple same thread check and merge
+async function threadsCheck(usedChannelId){
+	sameChannelThreads = threadArray.filter(pair => pair.channelId > usedChannelId);
+	const thread = openai.beta.threads.create();
+}
+
+//Add discord message to a thread
 async function addMessageToThread(usedChannelId, messageUser, messageContent){
-	const threadChannelPair = threadArray.find(array => array.channelId = usedChannelId);
-	await openai.beta.threads.messages.create(
+	const threadChannelPair = threadArray.find(array => array.channelId = usedChannelId); //get the channel-thread pair (which also has run status)
+	await openai.beta.threads.messages.create( //add the message to the un-busy thread
 		threadChannelPair.threadId,
 		{
 			role: "user",
 			content: messageUser + ": " + messageContent
 		}
-		);
+	);
 };
 
 //polled response
 async function createAndPollMessage(discordMessage){
+	//get the thread by the channel it came from
 	const threadChannelPair = threadArray.find(array => array.channelId = discordMessage.channelId);
+	//set the running status tag to true
+	threadChannelPair.running = true;
+	//run the thread
 	let run = await openai.beta.threads.runs.createAndPoll(
 		threadChannelPair.threadId,
 		{ 
-		  assistant_id: myAssistant.id,
+			assistant_id: myAssistant.id,
 		}
 	);
 	if(run.status === 'in_progress'){
-		//TODO: spinny wheel in discord
+		// Start typing indicator - this doesn't actually do anything
 		console.log("In Progress...");
 	}
 	if (run.status === 'completed') {
+		//set the running status tag to true
+		threadChannelPair.running = false;
+		//capture the thread (it gets the whole convo on the API side)
 		const messages = await openai.beta.threads.messages.list(
-		  run.thread_id
-		);
-		for (const message of messages.data.reverse()) {
-		  console.log(`${message.role} > ${message.content[0].text.value}`);
-		  discordMessage.channel.send(message.content[0].text.value);
-		}
-		} else {
-		console.log(run.status);
+			run.thread_id
+		  );
+		//print to discord only the last message
+		discordMessage.channel.send(messages.data[0].content[0].text.value);
 	}
 }
 
 //---------------------------------------------------------------------------------//
 
-//retrieve robohound
+//retrieve the bot
 retrieveAssistant();
 
 //Event Listener: login
 client.on('ready', () => {
 	//Create one thread per channel listed in .env
 	channelIds.forEach(async element => {
-		// threadArray.push(createThread(element))
-		threadArray.push({channelId: element, threadId: await createThread()})
+		threadArray.push({channelId: element, threadId: await createThread(), lastMessageId: '', running: false})
 	});
 	console.log(`Logged in as ${client.user.tag}!`);
 });
 
 //Event Listener: Waiting for messages and actioning them
-client.on('messageCreate', message => {
-    if (!message.guild) return; // Ignore DMs
+client.on('messageCreate', async message => {
+	message.channel.sendTyping();
 
-    if (message.mentions.users.has(client.user.id)) { //if the user mentions the bot (or replies?)
-		addMessageToThread(message.channelId, message.author.username, message.content); //add the message to the right thread
-		createAndPollMessage(message); //poll and run the message
-		// message.channel.send('Hello! How can I help you?');
+    if (!message.guild) return; // Ignore DMs
+	
+	// Don't do anything when message is from self or bot depending on config
+	if ((process.env.BOT_REPLIES === 'true' && message.author.id === client.user.id) || (process.env.BOT_REPLIES !== 'true' && message.author.bot)) return;
+
+	// Don't reply to system messages
+	if (message.system) return;
+
+    if (message.mentions.users.has(client.user.id)) { //if the user mentions the bot or replies to the bot
+		const threadChannelPair = threadArray.find(array => array.channelId = message.channelId); //retrieve the thread-channelId pair for the status
+		if(threadChannelPair.running === false){ //check the thread status
+			threadChannelPair.lastMessageId = message.id;
+			addMessageToThread(message.channelId, message.author.username, message.content); //add the message to the correct thread
+			createAndPollMessage(message); //poll, run, get response, and send it to the discord channel
+		}else{
+			console.log("Thread is Busy")
+			//TODO: create a new thread and merge them afterwards
+			threadArray.push({channelId: message.channelId, threadId: await createThread(),  lastMessageId: message.id, running: false});
+			//merge thread check
+
+
+		}
     }
 });
 
