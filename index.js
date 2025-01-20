@@ -52,10 +52,16 @@ async function threadsCheck(usedChannelId){
 	const thread = openai.beta.threads.create();
 }
 
+//checks if threads need to be merged
+async function threadCheckAndMerge(usedChannelId) {
+	sameChannelThreads = threadArray.filter(pair => pair.channelId > usedChannelId);
+	const combinedUniqueArray = [...new Set([...array1, ...array2])];
+}
+
 //Add discord message to a thread
 async function addMessageToThread(usedChannelId, messageUser, messageContent){
 	const threadChannelPair = threadArray.find(array => array.channelId = usedChannelId); //get the channel-thread pair (which also has run status)
-	await openai.beta.threads.messages.create( //add the message to the un-busy thread
+	await openai.beta.threads.messages.create( //add the message to the thread
 		threadChannelPair.threadId,
 		{
 			role: "user",
@@ -95,7 +101,7 @@ async function createAndPollMessage(discordMessage){
 
 //---------------------------------------------------------------------------------//
 
-//retrieve the bot
+//retrieve the chatGPT assistant
 retrieveAssistant();
 
 //Event Listener: login
@@ -109,31 +115,47 @@ client.on('ready', () => {
 
 //Event Listener: Waiting for messages and actioning them
 client.on('messageCreate', async message => {
-	message.channel.sendTyping();
+	//check if the message channel is one that's being listened to
+	if(channelIds.includes(message.channelId)){
 
-    if (!message.guild) return; // Ignore DMs
-	
-	// Don't do anything when message is from self or bot depending on config
-	if ((process.env.BOT_REPLIES === 'true' && message.author.id === client.user.id) || (process.env.BOT_REPLIES !== 'true' && message.author.bot)) return;
+		if (!message.guild) return; // Ignore DMs
+		
+		// Don't do anything when message is from self or bot depending on config
+		if ((process.env.BOT_REPLIES === 'true' && message.author.id === client.user.id) || (process.env.BOT_REPLIES !== 'true' && message.author.bot)) return;
 
-	// Don't reply to system messages
-	if (message.system) return;
+		// Don't reply to system messages
+		if (message.system) return;
 
-    if (message.mentions.users.has(client.user.id)) { //if the user mentions the bot or replies to the bot
-		const threadChannelPair = threadArray.find(array => array.channelId = message.channelId); //retrieve the thread-channelId pair for the status
-		if(threadChannelPair.running === false){ //check the thread status
-			threadChannelPair.lastMessageId = message.id;
-			addMessageToThread(message.channelId, message.author.username, message.content); //add the message to the correct thread
-			createAndPollMessage(message); //poll, run, get response, and send it to the discord channel
-		}else{
-			console.log("Thread is Busy")
-			//TODO: create a new thread and merge them afterwards
-			threadArray.push({channelId: message.channelId, threadId: await createThread(),  lastMessageId: message.id, running: false});
-			//merge thread check
-
-
+		//if the user mentions the bot or replies to the bot
+		if (message.mentions.users.has(client.user.id)) { 
+			//send a typing status
+			message.channel.sendTyping();
+			
+			const threadChannelPair = threadArray.find(array => array.channelId = message.channelId); //retrieve the thread-channelId pair for the status
+			if(threadChannelPair.running === false){ //check the thread status
+				threadChannelPair.lastMessageId = message.id;
+				addMessageToThread(message.channelId, message.author.username, message.content); //add the message to the correct thread
+				createAndPollMessage(message); //poll, run, get response, and send it to the discord channel
+			}else{
+				//create a new thread and merge them afterwards
+				threadArray.push({channelId: message.channelId, threadId: await createThread(),  lastMessageId: message.id, running: false});
+				//activate thread check/merge/shorten function
+				threadCheckAndMerge(message.channelId);
+			}
+			return;
+		}else{ //for all other messages, we record them into the thread for reference
+			if(threadChannelPair.running === false){
+				addMessageToThread(message.channelId, message.author.username, message.content);
+			}else{
+				//create a new thread and merge them afterwards
+				threadArray.push({channelId: message.channelId, threadId: await createThread(),  lastMessageId: message.id, running: false});
+				//activate thread check/merge/shorten function
+				threadCheckAndMerge(message.channelId);
+			}
 		}
-    }
+	}else{ //if its not in a channel we specified in .env, it gets ignored
+		return;
+	}
 });
 
 // Error handling to prevent crashes
