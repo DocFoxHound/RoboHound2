@@ -16,9 +16,8 @@
   "dependencies": {
     "discord.js": "^14.7.1",
     "dotenv": "^16.0.3",
-    "openai": "^3.2.1"
+    "openai": "^4.78.1"
   },
-  "devDependencies": {},
   "scripts": {
     "start": "node index.js"
   }
