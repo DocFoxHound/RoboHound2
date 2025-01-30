@@ -39,6 +39,12 @@ const client = new Client({
   ],
 });
 
+//used for finding user mentions, later on in the program
+const mentionRegex = /<@!?(\d+)>/g;
+
+//stores unique user ID's
+const userIds = new Set();
+
 // Set channels
 channelIds = process.env?.CHANNELS?.split(",");
 
@@ -50,7 +56,7 @@ messageArray = [];
 
 //populate the messageArray as an array of messages grouped by the ChannelId as a key
 channelIds.forEach(channel => {
-  messageArray.push({channelId: channel, messages: [], isBusy: false});
+  messageArray.push({channelId: channel, conversation: []});
 });
 
 // Retrieve RoboHound
@@ -62,55 +68,15 @@ async function retrieveAssistant() {
 };
 
 //Add discord message to a thread
-async function addMessagesToThread(fetchedMessages, thread, message) {
-  // Convert the Collection (that's what .fetch() returns) to an array and reverse it
-  const messagesArray = Array.from(fetchedMessages.values()).reverse();
-
-  //add each message to a thread
-  for (const msg of messagesArray) {
-    //if the message was a reply, we want to include the previous message as the newest
-    if(msg.reference && msg.reference.messageId){
-      const referencedMessage = await msg.channel.messages.fetch(msg.reference.messageId);
-      if(referencedMessage.author.id === client.user.id){
-        try {
-          await openai.beta.threads.messages.create(thread.id, {
-              role: "assistant",
-              content: referencedMessage.content
-          });
-        } catch (error) {
-            console.error('Error adding message to thread: ', error);
-        }
-      }else{
-        try {
-          await openai.beta.threads.messages.create(thread.id, {
-              role: "user",
-              content: referencedMessage.author.username + ": " + referencedMessage.content
-          });
-        } catch (error) {
-            console.error('Error adding message to thread: ', error);
-        }
-      }
-    }
-    //if the message is the bot, we want to add it a certain way so the bot knows it was itself speaking
-    if(msg.author.id === client.user.id){
-      try {
-        await openai.beta.threads.messages.create(thread.id, {
-            role: "assistant",
-            content: msg.content
-        });
-      } catch (error) {
-          console.error('Error adding message to thread: ', error);
-      }
-    }else{
-      try {
-        await openai.beta.threads.messages.create(thread.id, {
-            role: "user",
-            content: msg.author.username + ": " + msg.content
-        });
-      } catch (error) {
-          console.error('Error adding message to thread: ', error);
-      }
-    }
+async function addMessagesToThread(combinedConvo, thread) {
+  // add conversation to a thread
+  try {
+    await openai.beta.threads.messages.create(thread.id, {
+        role: "user",
+        content: combinedConvo
+    });
+  } catch (error) {
+      console.error('Error adding message to thread: ', error);
   }
 }
 
@@ -121,12 +87,12 @@ async function runThread(message, thread) {
     thread.id,
     {
       assistant_id: myAssistant.id,
-      additional_instructions: "Do not start with 'Ah,'. Do not ask to continue the conversation. Do not reference files." //reinforce some behaviors in the bot that aren't working right
+      additional_instructions: process.env.BOT_INSTRUCTIONS //reinforce some behaviors in the bot that aren't working right
     }
   );
-  if (run.status === "in_progress"){}
+  if (run.status === "in_progress"){} //DELETE?
   if (run.status === "completed") {
-    //capture the thread (it gets the whole convo on the API side)
+    //capture the thread and shove it into a reply
     try{
       const messages = await openai.beta.threads.messages.list(run.thread_id);
       //print to discord only the last message
@@ -149,9 +115,6 @@ client.on("ready", () => {
 
 //Event Listener: Waiting for messages and actioning them
 client.on("messageCreate", async (message) => {
-  //send a typing status
-  message.channel.sendTyping();
-
   //ignore if the message channel is not one that's being listened to
   if (channelIds.includes(message.channelId)) {
     // Ignore DMs
@@ -166,25 +129,52 @@ client.on("messageCreate", async (message) => {
 
     //if the user mentions the bot or replies to the bot
     if (message.mentions.users.has(client.user.id)) {
-      //get the last 5 messages in this channel
-      const fetchedMessages = await message.channel.messages.fetch({ limit: 50 });
+      //send a typing status
+      message.channel.sendTyping();
 
-      // Replace user mentions in the message content
-      fetchedMessages.forEach(msg => {
-          msg.mentions.users.forEach(user => {
-              const regex = new RegExp(`<@!?${user.id}>`, 'g');
-              msg.content = msg.content.replace(regex, `@${user.username}`);
-          });
+      // Replace mentions with user's username
+      const readableMessage = message.content.replace(mentionRegex, (match, userId) => {
+        const user = message.guild.members.cache.get(userId);
+        return user ? `@${user.displayName}` : "@unknown-user";
       });
+
+      //add message to the proper array, and if its over X entries get rid of the oldest
+      const channelConvoPair = messageArray.find(c => c.channelId === message.channel.id);
+      if (channelConvoPair.conversation.length >= process.env.MESSAGE_AMOUNT){
+        channelConvoPair.conversation.shift();
+      }
+      channelConvoPair.conversation.push(message.member.displayName + ": " + readableMessage)
+      
+      //convert the array into a string, because it's faster than storing every message and 
+      // separately adding it to the assistant's thread using the API (and also cheaper), or 
+      // else you end up trying to cram 100 entries into 100 API calls and hang the system.
+      // ask me how I know. I mean sure, the bot loses some context, but really... it's not
+      // that noticeable
+      const combinedConvo = channelConvoPair.conversation.join('\n') //newline that shit
 
       //create a thread
       const thread = await openai.beta.threads.create();
 
       //add the message to the correct thread
-      await addMessagesToThread(fetchedMessages, thread, message); 
+      await addMessagesToThread(combinedConvo, thread); 
 
       //poll, run, get response, and send it to the discord channel
       await runThread(message, thread); 
+      return;
+    } else {
+      //FOR ALL OTHER MESSAGES
+      // Replace mentions with user's username
+      const readableMessage = message.content.replace(mentionRegex, (match, userId) => {
+        const user = message.guild.members.cache.get(userId);
+        return user ? `@${user.displayName}` : "@unknown-user";
+      });
+
+      //add message to the proper array, and if its over X entries get rid of the oldest
+      const channelConvoPair = messageArray.find(c => c.channelId === message.channel.id);
+      if (channelConvoPair.conversation.length >= process.env.MESSAGE_AMOUNT){
+        channelConvoPair.conversation.shift();
+      }
+      channelConvoPair.conversation.push(message.member.displayName + ": " + readableMessage)
     }
   } else {
     return;
