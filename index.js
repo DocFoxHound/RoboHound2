@@ -17,7 +17,8 @@ const { Configuration, OpenAI } = require("openai");
 const { threadId } = require("node:worker_threads");
 const { isNull } = require("node:util");
 // Require global functions
-const { initPersonalities } = require(path.join(__dirname, "common.js"));
+const vectorHandler = require("./vector-handler.js");
+const threadHandler = require("./thread-handler");
 
 // Initialize dotenv config file
 const args = process.argv.slice(2);
@@ -36,14 +37,16 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences
   ],
 });
 
-//used for finding user mentions, later on in the program
-const mentionRegex = /<@!?(\d+)>/g;
-
 //stores unique user ID's
 const userIds = new Set();
+
+//used for finding user mentions, later on in the program
+const mentionRegex = /<@!?(\d+)>/g;
 
 // Set channels
 channelIds = process.env?.CHANNELS?.split(",");
@@ -59,49 +62,13 @@ channelIds.forEach(channel => {
   messageArray.push({channelId: channel, conversation: []});
 });
 
-// Retrieve RoboHound
+// Retrieve the bot assistant (read: personality)
 myAssistant = openai.beta.assistants;
 async function retrieveAssistant() {
   myAssistant = await openai.beta.assistants.retrieve(
     process.env.ASSISTANT_KEY
   );
 };
-
-//Add discord message to a thread
-async function addMessagesToThread(combinedConvo, thread) {
-  // add conversation to a thread
-  try {
-    await openai.beta.threads.messages.create(thread.id, {
-        role: "user",
-        content: combinedConvo
-    });
-  } catch (error) {
-      console.error('Error adding message to thread: ', error);
-  }
-}
-
-//polled response
-async function runThread(message, thread) {
-  //run the thread
-  let run = await openai.beta.threads.runs.createAndPoll(
-    thread.id,
-    {
-      assistant_id: myAssistant.id,
-      additional_instructions: process.env.BOT_INSTRUCTIONS //reinforce some behaviors in the bot that aren't working right
-    }
-  );
-  if (run.status === "in_progress"){} //DELETE?
-  if (run.status === "completed") {
-    //capture the thread and shove it into a reply
-    try{
-      const messages = await openai.beta.threads.messages.list(run.thread_id);
-      //print to discord only the last message
-      message.reply((messages.data[0].content[0].text.value).replace(client.user.username + ": ", "").replace(/【.*?】/gs, '')); //the way this works, sometimes it responds in the third person. This removes that.
-    }catch(error){
-      console.error('Error running the thread: ', error);
-    }
-  }
-}
 
 //---------------------------------------------------------------------------------//
 
@@ -110,6 +77,9 @@ retrieveAssistant();
 
 //Event Listener: login
 client.on("ready", () => {
+  //run the vector checker to see if we need to update the vector store for the bot's background knowledge
+  const checkChatLogs = setInterval(() => vectorHandler.chatLogCheck(openai), 3600000);
+  const checkUsersOnline = setInterval(() => vectorHandler.onlineUserCheck(openai, client), 60000);
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
@@ -132,49 +102,21 @@ client.on("messageCreate", async (message) => {
       //send a typing status
       message.channel.sendTyping();
 
-      // Replace mentions with user's username
-      const readableMessage = message.content.replace(mentionRegex, (match, userId) => {
-        const user = message.guild.members.cache.get(userId);
-        return user ? `@${user.displayName}` : "@unknown-user";
-      });
-
-      //add message to the proper array, and if its over X entries get rid of the oldest
-      const channelConvoPair = messageArray.find(c => c.channelId === message.channel.id);
-      if (channelConvoPair.conversation.length >= process.env.MESSAGE_AMOUNT){
-        channelConvoPair.conversation.shift();
-      }
-      channelConvoPair.conversation.push(message.member.displayName + ": " + readableMessage)
-      
-      //convert the array into a string, because it's faster than storing every message and 
-      // separately adding it to the assistant's thread using the API (and also cheaper), or 
-      // else you end up trying to cram 100 entries into 100 API calls and hang the system.
-      // ask me how I know. I mean sure, the bot loses some context, but really... it's not
-      // that noticeable
-      const combinedConvo = channelConvoPair.conversation.join('\n') //newline that shit
+      //process the message so that it comes out nice and neat for use
+      const combinedConvo = threadHandler.processMessageToSend(message, messageArray, mentionRegex)
 
       //create a thread
       const thread = await openai.beta.threads.create();
 
-      //add the message to the correct thread
-      await addMessagesToThread(combinedConvo, thread); 
+      //add the message to the thread
+      await threadHandler.addMessagesToThread(combinedConvo, thread, openai); 
 
       //poll, run, get response, and send it to the discord channel
-      await runThread(message, thread); 
+      await threadHandler.runThread(message, thread, openai, client); 
       return;
     } else {
       //FOR ALL OTHER MESSAGES
-      // Replace mentions with user's username
-      const readableMessage = message.content.replace(mentionRegex, (match, userId) => {
-        const user = message.guild.members.cache.get(userId);
-        return user ? `@${user.displayName}` : "@unknown-user";
-      });
-
-      //add message to the proper array, and if its over X entries get rid of the oldest
-      const channelConvoPair = messageArray.find(c => c.channelId === message.channel.id);
-      if (channelConvoPair.conversation.length >= process.env.MESSAGE_AMOUNT){
-        channelConvoPair.conversation.shift();
-      }
-      channelConvoPair.conversation.push(message.member.displayName + ": " + readableMessage)
+      threadHandler.processMessage(message, messageArray, mentionRegex);
     }
   } else {
     return;
@@ -194,3 +136,6 @@ client.on("disconnect", () => {
 
 //logs the bot in
 client.login(process.env.CLIENT_TOKEN);
+
+//TODO
+//see active users, see user roles
