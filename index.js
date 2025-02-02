@@ -50,6 +50,7 @@ const mentionRegex = /<@!?(\d+)>/g;
 
 // Set channels
 channelIds = process.env?.CHANNELS?.split(",");
+channelIdAndName = [];
 
 //array of threads (one made per channel)
 threadArray = [];
@@ -77,9 +78,16 @@ retrieveAssistant();
 
 //Event Listener: login
 client.on("ready", () => {
+  //preload some channelIDs and Names
+  channelIds.forEach(channel => {
+    channelObj = client.channels.cache.get(channel)
+    channelIdAndName.push({channelName: channelObj.name, channelId: channelObj.id});
+  });
+
   //run the vector checker to see if we need to update the vector store for the bot's background knowledge
-  const checkChatLogs = setInterval(() => vectorHandler.chatLogCheck(openai), 3600000);
-  const checkUsersOnline = setInterval(() => vectorHandler.onlineUserCheck(openai, client), 60000);
+  const checkChatLogs = setInterval(() => vectorHandler.refreshChatLogs(channelIdAndName, openai, client), 30000);
+  // const checkChatLogs = setInterval(() => vectorHandler.chatLogCheck(openai), 86400000);
+  const checkUsersOnline = setInterval(() => vectorHandler.refreshUserList(openai, client), 43200000);
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
