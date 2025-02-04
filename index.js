@@ -9,6 +9,7 @@ const {
   Events,
   GatewayIntentBits,
   PermissionFlagsBits,
+  ChannelType,
 } = require("discord.js");
 // Initialize dotenv
 const dotenv = require("dotenv");
@@ -85,8 +86,7 @@ client.on("ready", () => {
   });
 
   //run the vector checker to see if we need to update the vector store for the bot's background knowledge
-  const checkChatLogs = setInterval(() => vectorHandler.refreshChatLogs(channelIdAndName, openai, client), 30000);
-  // const checkChatLogs = setInterval(() => vectorHandler.chatLogCheck(openai), 86400000);
+  const checkChatLogs = setInterval(() => vectorHandler.refreshChatLogs(channelIdAndName, openai, client), 10800000);
   const checkUsersOnline = setInterval(() => vectorHandler.refreshUserList(openai, client), 43200000);
   console.log(`Logged in as ${client.user.tag}!`);
 });
@@ -105,19 +105,40 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
+    //welcome a new member in the welcome channel. I wrote this at midnight. TODO: refactor for beauty later
+    const mentionedUser = message.mentions.users;
+    const thread = await openai.beta.threads.create();
+    const welcomeInstructions = process.env.WELCOME_INSTRUCTION;
+    const welcomeInstructions2 = process.env.WELCOME_INSTRUCTION2;
+    if (message.channelId === process.env.WELCOME_CHANNEL_ID && message.content.includes(process.env.WELCOME_MESSAGE)){
+      await threadHandler.addMessagesToThread(`${welcomeInstructions}: USER: ${mentionedUser}`, thread, openai); 
+      await threadHandler.runThread(message, thread, openai, client, mentionedUser); 
+    } else if (message.channelId === process.env.WELCOME_CHANNEL_ID && message.content.includes(process.env.WELCOME_MESSAGE2)){
+      await threadHandler.addMessagesToThread(`${welcomeInstructions2}: USER: ${mentionedUser}`, thread, openai); 
+      await threadHandler.runThread(message, thread, openai, client, mentionedUser); 
+    }
+
     //if the user mentions the bot or replies to the bot
     if (message.mentions.users.has(client.user.id)) {
       //send a typing status
       message.channel.sendTyping();
 
       //process the message so that it comes out nice and neat for use
-      const combinedConvo = threadHandler.processMessageToSend(message, messageArray, mentionRegex)
+      const newMessage = threadHandler.processMessageToSend(message, mentionRegex);
+
+      //combine the convo
+      const previosConvo = threadHandler.processPreviosConvo(messageArray, message);
+
+      //put the conversation and the latest message in an array
+      const combinedMessages = [previosConvo, newMessage];
 
       //create a thread
       const thread = await openai.beta.threads.create();
 
       //add the message to the thread
-      await threadHandler.addMessagesToThread(combinedConvo, thread, openai); 
+      for (const message of combinedMessages) {
+        await threadHandler.addMessagesToThread(message, thread, openai); 
+      }
 
       //poll, run, get response, and send it to the discord channel
       await threadHandler.runThread(message, thread, openai, client); 

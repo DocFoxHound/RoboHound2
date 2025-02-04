@@ -4,12 +4,8 @@ const path = require("node:path");
 const util = require('util');
 // Require the necessary discord.js classes
 const {
-  Client,
-  Collection,
-  Events,
-  GatewayIntentBits,
-  PermissionFlagsBits,
-} = require("discord.js");
+    ChannelType,
+  } = require("discord.js");
 // Initialize dotenv
 const dotenv = require("dotenv");
 // Require openai
@@ -19,18 +15,68 @@ const { isNull } = require("node:util");
 
 async function refreshChatLogs(channelIdAndName, openai, client){
     console.log("Refreshing Chat Logs")
-    const guild = await client.guilds.cache.get(process.env.GUILD_ID);
-    
-    //find all channel chat logs already being hosted and delete them
+    const guild = await client.guilds.fetch(process.env.GUILD_ID);
     const list = await openai.files.list();
     const files = list.data;
-    for (const channel of channelIdAndName) {
+    const now = new Date();
+    const activeChannels = [];
+
+    //ignore inactive channels
+    for (const channelInfo of channelIdAndName) {
+
+        const channelObject = await client.channels.fetch(channelInfo.channelId);
+
+        if (!channelObject) {
+            console.log(`Channel with ID ${channelInfo.channelId} not found in cache.`);
+            continue;
+        }
+
+        //get the time for the last message in this channel
+        if(channelObject.type = 15){ //if its a forum channel
+            console.log("Forum Thread Refresh");
+            try{
+                const threadFetch = await channelObject.threads.fetchActive();  // Fetch active threads
+                const threads = threadFetch.threads;
+                if (threads.size > 0) {
+                    const newestThread = Array.from(threads.values())
+                        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0];
+                    const messageDate = new Date(newestThread.createdTimestamp);
+                    const hoursDiff = (now - messageDate) / (3600000);
+                    if (hoursDiff <= 3) {
+                        activeChannels.push(channelInfo);
+                    }
+                } else {
+                    console.error(`No messages found in ${channelInfo.channelName}: ${error}`);
+                }
+            }catch(error){
+                console.error(`Failed to fetch messages for channel ${channelInfo.channelName}: ${error}`);
+            }
+        }else{ //if its a text channel
+            console.log("Chat Channel Refresh");
+            try {
+                const lastMessage = await channelObject.messages.fetch({ limit: 1 });
+                if (lastMessage.size > 0) {
+                    const lastMsg = lastMessage.first();
+                    const messageDate = new Date(lastMsg.createdTimestamp);
+                    const hoursDiff = (now - messageDate) / (3600000);
+                    if (hoursDiff <= 3) {
+                        activeChannels.push(channelInfo);
+                    }
+                } else {
+                    console.error(`No messages found in ${channelInfo.channelName}: ${error}`);
+                }
+            } catch (error) {
+                console.error(`Failed to fetch messages for channel ${channelInfo.channelName}: ${error}`);
+            }
+        }
+    }
+
+    //delete the channel chatlogs that need refreshed
+    for (const channel of activeChannels) {
         try{
             const file = files.find(f => f.filename === (guild.name + "ChatLogs-" + channel.channelName + ".txt" )); 
             fileToDeleteId = file.id;
-        }catch(error){
-            console.log("No '" + channel.channelName + "' ChatLog existed in Storage Uploads")
-        }
+        }catch(error){}
 
         try{
             //first, delete it from the vector storage
@@ -40,14 +86,12 @@ async function refreshChatLogs(channelIdAndName, openai, client){
             );
             //then, delete it from the file storage
             await openai.files.del(fileToDeleteId);
-        }catch(error){
-            console.log("Error deleting the chatlog for " + channel.channelName + ": " + error)
-        }
+        }catch(error){}
     }
     
     //Now get the chat logs and upload them
     try{
-        await getChatLogs(client, guild, channelIdAndName, openai);
+        await getChatLogs(client, guild, activeChannels, openai);
     }catch(error){
         console.log("Error uploading chatlogs: " + error);
     }
@@ -55,7 +99,7 @@ async function refreshChatLogs(channelIdAndName, openai, client){
 
 async function refreshUserList(openai, client){
     console.log("Refreshing User List")
-    const guild = await client.guilds.cache.get(process.env.GUILD_ID);
+    const guild = await client.guilds.fetch(process.env.GUILD_ID);
     fileToDeleteId = "";
     try{
         //get the list of files and find the UserList.txt file's ID
@@ -130,54 +174,86 @@ async function getAndUploadUserList(client, guild){
 async function getChatLogs(client, guild, channelIdAndName, openai){
     console.log("Getting the Chat Logs")
     for (const channel of channelIdAndName) {
-        messageArray = ["Chat Logs of " + guild.name + "'s " + channel.channelName + " chat channel."];
-        channelObject = client.channels.cache.get(channel.channelId)
+        let messageArray = [`Chat Logs of ${guild.name}'s ${channel.channelName} chat channel.`];
+        let lastId = null;
+        let channelObject = await client.channels.fetch(channel.channelId);
+        if (!channelObject) {
+            console.log(`Channel ${channel.channelName} not found`);
+            continue;
+        }
         try{
-            console.log("Retrieving " + channel.channelName + " Messages")
-            //TODO If this is a forum channel (.type == 15) do it differently
-            if(channelObject.type !== 15){
-                const messages = await channelObject.messages.fetch({ limit: 100 });
-                messages.forEach(message => {
-                    if (message.embeds.length > 0) { //if its an embed, log it differently
-                        message.embeds.forEach((embed, index) => {
-                            messageArray.push(`<${message.createdTimestamp}> Embed: \"${embed.title}\": Description: \"${embed.description}\"`);
-                            // If the embed has fields, log each field
-                            if (embed.fields.length > 0) {
-                                embed.fields.forEach((field, fieldIndex) => {
-                                    messageArray.push(`Field: ${field.name}: \"${field.value}\"`);
-                                });
-                            }
-                        });
-                    }
-                    if(message.member && message.member.nickname) {
-                        messageArray.push(`<${message.createdTimestamp}> ${message.member.nickname}: ${message.content}`);
-                    } else {
-                        messageArray.push(`<${message.createdTimestamp}> ${message.author.username}: ${message.content}`);
-                    }
-                });
-
-                // Flatten the array into a string
-                const allMessages = messageArray.join('\n'); 
-
-                // Send the string off to be turned into a file and uploaded
-                createAndUploadFile(allMessages, openai, guild.name, `ChatLogs-${channel.channelName}`);
-            }else{
-                console.log("Forum Thread Channel")
-                const threads = await channelObject.threads.fetchActive({ limit: 100 });
-                for (const thread of threads) {
-                    const messages = await thread.messages.fetch();
-                    messageArray.push("\nThread: " + thread.name);
-                    // Process messages as needed
-                    messages.forEach(message => {
-                        messageArray.push("<" + message.createdTimestamp + "> " + message.member.nickname + ": \"" + message.content + "\"");
-                    });
+            console.log(`Retrieving ${channel.channelName} Messages`)
+            while(messageArray.length < 500){
+                const options = { limit: 100 };
+                if (lastId) {
+                    options.before = lastId;
                 }
-                //flatten the array into a string
-                const allMessages = messageArray.join('\n'); 
 
-                //send the string off to be turned into a file and uploaded
-                createAndUploadFile(allMessages, openai, guild.name, `ChatLogs-${channel.channelName}`);
+                //Check and process if its a forum channel or a regular channel
+                if(channelObject.type === ChannelType.GuildForum){ //if this is a forum channel, do this:
+                    const now = new Date();
+                    const daysOld = now.getTime() - (process.env.DAYS_OLD * 86400000)
+                    const threadFetch = await channelObject.threads.fetchActive();
+                    //filter by parent channel (discord actually has a bug returning all threads from everywhere)
+                    //and by how old they are
+                    const threads = threadFetch.threads.filter(thread => 
+                        thread.parentId === channel.channelId &&
+                        (now.getTime() - thread.createdTimestamp) < daysOld
+                    );
+
+                    // This maps out all of the messages and details we need and returns them as a promise, so they're all done asynchronously,
+                    // improving speed of this operation a lot. I wont lie, I asked ChatGPT to replace the code previously here and to make it 
+                    // faster, and I'm not disappointed.
+                    const messagesFetchPromises = threads.map(async (thread) => {
+                        const messages = await thread.messages.fetch();
+                        const messageDetails = messages.map(message => {
+                            const embedsDetails = message.embeds.map(embed => {
+                                const fieldsDetails = embed.fields.map(field => `Field: ${field.name}: "${field.value}"`).join('\n');
+                                return `<${message.createdTimestamp}> Embed: "${embed.title ?? 'No Title'}": Description: "${embed.description ?? 'No Description'}"\n${fieldsDetails}`;
+                            }).join('\n');
+
+                            const displayName = message.member?.nickname ?? message.author.username;
+                            return embedsDetails || `<${message.createdTimestamp}> ${displayName}: "${message.content}"`;
+                        }).join('\n');
+                        lastId = messages.last().id;
+                        return `\nThread: ${thread.name}\n${messageDetails}`;
+                    });
+
+                    // Await all fetched messages and then handle them
+                    try {
+                        const allMessages = await Promise.all(messagesFetchPromises);
+                        allMessages.forEach(messagesContent => messageArray.push(messagesContent));
+                    } catch (error) {
+                        console.error('Error fetching messages from threads:', error);
+                    }
+                }else{ //this is a text channel
+                    const messages = await channelObject.messages.fetch(options);
+                    if (messages.size === 0) {
+                        break; // No more messages left to fetch
+                    };
+                    messages.forEach(async message => {
+                        if (message.embeds.length > 0) {
+                            await message.embeds.forEach((embed, index) => {
+                                let embedLog = `<${message.createdTimestamp}> Embed: "${embed.title ?? 'No Title'}": Description: "${embed.description ?? 'No Description'}"`;
+                                messageArray.push(embedLog);
+                                if (embed.fields) {
+                                    embed.fields.forEach((field, fieldIndex) => {
+                                        messageArray.push(`Field: ${field.name}: "${field.value}"`);
+                                    });
+                                }
+                            });
+                        } else {
+                            const displayName = message.member?.nickname ?? message.author.username;
+                            messageArray.push(`<${message.createdTimestamp}> ${displayName}: "${message.content}"`);
+                        }
+                    });
+                    lastId = messages.last().id;
+                }
             }
+            //flatten the array into a string
+            const allMessages = messageArray.join('\n'); 
+            //send the string off to be turned into a file and uploaded
+            await createAndUploadFile(allMessages, openai, guild.name, `ChatLogs-${channel.channelName}`);
         }catch(error){
             console.log("Error getting chat logs: " + error)
         }
@@ -186,7 +262,7 @@ async function getChatLogs(client, guild, channelIdAndName, openai){
 
 async function createAndUploadFile(textString, openai, guildName, givenName){
     const fileName = "./" + guildName + givenName + ".txt";
-    await fs.writeFile(fileName, textString, 'utf8', function(err) {
+    await fs.promises.writeFile(fileName, textString, 'utf8', function(err) {
         if (err) {
             console.log('An error occurred while writing ' + fileName + ': ', err);
             return;
