@@ -7,6 +7,7 @@ const { OpenAI } = require("openai");
 // Require global functions
 const vectorHandler = require("./vector-handler.js");
 const threadHandler = require("./thread-handler");
+const generalPurpose = require("./general-purpose-functions.js")
 
 // Initialize dotenv config file
 const args = process.argv.slice(2);
@@ -48,6 +49,9 @@ threadArray = [];
 //array of stored messages to be processed
 messageArray = [];
 
+//used to store cache'd users, periodically refreshed
+userCache = new Map();
+
 //populate the messageArray as an array of messages grouped by the ChannelId as a key
 channelIds.forEach((channel) => {
   messageArray.push({
@@ -69,83 +73,104 @@ async function retrieveAssistant() {
 //retrieve the chatGPT assistant
 retrieveAssistant();
 
-//Event Listener: login
-client.on("ready", () => {
-  //preload some channelIDs and Names
-  channelIds.forEach((channel) => {
-    channelObj = client.channels.cache.get(channel);
-    channelIdAndName.push({
-      channelName: channelObj.name,
-      channelId: channelObj.id,
-    });
-  });
+//run the vector checker to see if we need to update the vector store for the bot's background knowledge
+generalPurpose.routineFunctions();
 
-  //run the vector checker to see if we need to update the vector store for the bot's background knowledge
-  const checkChatLogs = setInterval(
-    () => vectorHandler.refreshChatLogs(channelIdAndName, openai, client),
-    10800000
-  );
-  const checkUsersOnline = setInterval(
-    () => vectorHandler.refreshUserList(openai, client),
-    43200000
-  );
+//Event Listener: login
+client.on("ready", async () => {
+  //fetch channels on a promise, reducing startup time
+  const channelFetchPromises = channelIds.map(id => client.channels.fetch(id).catch(e => console.error(`Failed to fetch channel: ${id}`, e)));
+  const channels = await Promise.all(channelFetchPromises);
+  //preload some channelIDs and Names
+  channelIdAndName = channels.map(channel => ({
+    channelName: channel?.name,
+    channelId: channel?.id
+  })).filter(channel => channel.channelId);
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
-//Event Listener: Waiting for messages and actioning them
+// //Event Listener: Waiting for messages and actioning them
+// client.on("messageCreate", async (message) => {
+//   //ignore if the message channel is not one that's being listened to
+//   if (channelIds.includes(message.channelId)) {
+//     // Ignore DMs
+//     if (!message.guild) {
+//       return;
+//     }
+
+//     // Don't reply to system messages
+//     if (message.system) {
+//       return;
+//     }
+
+//     //if the user mentions the bot or replies to the bot
+//     if (message.mentions.users.has(client.user.id)) {
+//       //send a typing status
+//       message.channel.sendTyping();
+
+//       //process the message so that it comes out nice and neat for use
+//       const newMessage = threadHandler.processMessageToSend(
+//         message,
+//         mentionRegex
+//       );
+
+//       //combine the convo
+//       const previosConvo = threadHandler.processPreviosConvo(
+//         messageArray,
+//         message
+//       );
+
+//       //put the conversation and the latest message in an array
+//       const combinedMessages = [previosConvo, newMessage];
+
+//       //create a thread
+//       const thread = await openai.beta.threads.create();
+
+//       //add the message to the thread
+//       for (const message of combinedMessages) {
+//         await threadHandler.addMessagesToThread(message, thread, openai);
+//       }
+
+//       //poll, run, get response, and send it to the discord channel
+//       await threadHandler.runThread(message, thread, openai, client);
+//       return;
+//     } else {
+//       //FOR ALL OTHER MESSAGES
+//       threadHandler.formatMessage(message, messageArray, mentionRegex);
+//     }
+//   } else {
+//     return;
+//   }
+// });
+
 client.on("messageCreate", async (message) => {
-  //ignore if the message channel is not one that's being listened to
-  if (channelIds.includes(message.channelId)) {
-    // Ignore DMs
-    if (!message.guild) {
-      return;
-    }
+  // Check for conditions to ignore the message early
+  if (!channelIds.includes(message.channelId) || !message.guild || message.system) {
+    return;
+  }
 
-    // Don't reply to system messages
-    if (message.system) {
-      return;
-    }
+  // Check if the bot is mentioned or if the message is a reply to the bot
+  if (message.mentions.users.has(client.user.id)) {
+    message.channel.sendTyping();  // Send typing indicator once we know we need to process
 
-    //welcome a new member in the welcome channel. I wrote this at midnight. TODO: refactor for beauty later
-    threadHandler.processWelcomeMessage(message, openai, client);
+    const newMessage = threadHandler.processMessageToSend(message, mentionRegex, userCache);
+    const previosConvo = threadHandler.processPreviosConvo(messageArray, message, userCache);
+    const combinedMessages = [previosConvo, newMessage];
 
-    //if the user mentions the bot or replies to the bot
-    if (message.mentions.users.has(client.user.id)) {
-      //send a typing status
-      message.channel.sendTyping();
-
-      //process the message so that it comes out nice and neat for use
-      const newMessage = threadHandler.processMessageToSend(
-        message,
-        mentionRegex
-      );
-
-      //combine the convo
-      const previosConvo = threadHandler.processPreviosConvo(
-        messageArray,
-        message
-      );
-
-      //put the conversation and the latest message in an array
-      const combinedMessages = [previosConvo, newMessage];
-
-      //create a thread
+    // Handle thread creation and message processing
+    try {
       const thread = await openai.beta.threads.create();
-
-      //add the message to the thread
       for (const message of combinedMessages) {
-        await threadHandler.addMessagesToThread(message, thread, openai);
+        await threadHandler.addMessagesToThread(message, thread.id, openai);
       }
-
-      //poll, run, get response, and send it to the discord channel
       await threadHandler.runThread(message, thread, openai, client);
-      return;
-    } else {
-      //FOR ALL OTHER MESSAGES
-      threadHandler.formatMessage(message, messageArray, mentionRegex);
+    } catch (error) {
+      console.error("Failed to process thread:", error);
+      message.channel.send("ERROR.");
     }
   } else {
-    return;
+    // Handle all other messages
+    threadHandler.formatMessage(message, messageArray, mentionRegex);
   }
 });
 

@@ -302,7 +302,7 @@ async function getChatLogs(client, guild, channelIdAndName, openai) {
 }
 
 async function createAndUploadFile(textString, openai, guildName, givenName) {
-  const fileName = "./" + guildName + givenName + ".txt";
+  const fileName = "./chatlogs/" + guildName + givenName + ".txt";
   await fs.promises.writeFile(fileName, textString, "utf8", function (err) {
     if (err) {
       console.log("An error occurred while writing " + fileName + ": ", err);

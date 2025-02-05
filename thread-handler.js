@@ -1,106 +1,76 @@
 const functionHandler = require("./function-handler");
+const generalPurpose = require("./general-purpose-functions")
 
 //convert the message into something we'll store to use for later
-function formatMessage(message, messageArray, mentionRegex) {
-  // Replace mentions with user's username
-  const readableMessage = message.content.replace(
-    mentionRegex,
-    (match, userId) => {
-      const user = message.guild.members.cache.get(userId);
-      return user ? `@${user.displayName}` : "@unknown-user";
+function formatMessage(message, messageArray, mentionRegex, userCache) {
+    const readableMessage = message.content.replace(mentionRegex, (match, userId) => {
+        const user = generalPurpose.getCachedUser(message.guild, userId, userCache);
+        const displayName = user ? `@${user.displayName}` : "@unknown-user";
+        return displayName;
+    });
+    const channelConvoPair = messageArray.find(c => c.channelId === message.channel.id);
+    if (channelConvoPair) {
+        const maxEntries = process.env.MESSAGE_AMOUNT; 
+        // Efficiently manage the conversation array to avoid memory overflow
+        if (channelConvoPair.conversation.length >= maxEntries) {
+            channelConvoPair.conversation.shift(); // Remove the oldest message
+        }
+        try {
+            channelConvoPair.conversation.push(
+                `<${message.createdTimestamp}> ${message.member.displayName || 'Unknown User'}: ${readableMessage}`
+            );
+        } catch (error) {
+            console.error(`Error adding message to the ConvoPair array: ${error}`);
+        }
+    } else {
+        console.error("No matching conversation pair found for the channel");
     }
-  );
-  //add message to the proper array, and if its over X entries get rid of the oldest
-  //note here that the max character amount that can go into a single message is 2000,
-  //so an entry number over, like, 50 is absolutely pointless and just wastes RAM space
-  const channelConvoPair = messageArray.find(
-    (c) => c.channelId === message.channel.id
-  );
-  if (channelConvoPair.conversation.length >= process.env.MESSAGE_AMOUNT) {
-    channelConvoPair.conversation.shift();
-  }
-  try {
-    channelConvoPair.conversation.push(
-      `<${message.createdTimestamp}> ${message.member.displayName}: ${readableMessage}`
-    );
-  } catch (error) {
-    console.log(
-      `There was an error adding a message to the ConvoPair array: ${error}`
-    );
-  }
 }
 
 //Convert the input text to something the bot can use
-function processMessageToSend(message, mentionRegex) {
-  // Replace mentions with user's username
-  const readableMessage = message.content.replace(
-    mentionRegex,
-    (match, userId) => {
-      const user = message.guild.members.cache.get(userId);
-      return user ? `@${user.displayName}` : "@unknown-user";
+function processMessageToSend(message, mentionRegex, userCache) {
+    const readableMessage = message.content.replace(mentionRegex, (match, userId) => {
+        const user = generalPurpose.getCachedUser(message.guild, userId, userCache);
+        const displayName = user ? `@${user.displayName}` : "@unknown-user";
+        return displayName;
+    });
+    // Format the message, adding metadata
+    const contentText = `<${message.createdTimestamp}> ${message.member.displayName || "Unknown Member"}: ${readableMessage}`;
+    // Ensure the message length does not exceed Discord's limit of 2000 characters
+    if (contentText.length > 2000) {
+        // Return only the last 2000 characters of the message
+        return contentText.slice(-2000);
     }
-  );
-  //convert the array into a string, because it's faster than sending each individual message via the api
-  const contentText = `<${message.createdTimestamp}> ${message.member.displayName}: ${readableMessage}`;
-  //strings being put into a single message cannot exceed 2000 characters
-  if (contentText.length > 1999) {
-    return contentText.slice(contentText.length - 1999);
-  }
-  return contentText;
+    return contentText;
 }
 
-async function processWelcomeMessage(message, openai, client) {
-  const mentionedUser = message.mentions.users;
-  const thread = await openai.beta.threads.create();
-  const welcomeInstructions = process.env.WELCOME_INSTRUCTION;
-  const welcomeInstructions2 = process.env.WELCOME_INSTRUCTION2;
-  if (
-    message.channelId === process.env.WELCOME_CHANNEL_ID &&
-    message.content.includes(process.env.WELCOME_MESSAGE)
-  ) {
-    await addMessagesToThread(
-      `${welcomeInstructions}: USER: ${mentionedUser}`,
-      thread,
-      openai
-    );
-    await runThread(message, thread, openai, client, mentionedUser);
-  } else if (
-    message.channelId === process.env.WELCOME_CHANNEL_ID &&
-    message.content.includes(process.env.WELCOME_MESSAGE2)
-  ) {
-    await addMessagesToThread(
-      `${welcomeInstructions2}: USER: ${mentionedUser}`,
-      thread,
-      openai
-    );
-    await runThread(message, thread, openai, client, mentionedUser);
-  }
-}
-
-//Convert the input text to something the bot can use
 function processPreviosConvo(messageArray, message) {
-  //add message to the proper array, and if its over X entries get rid of the oldest
-  const channelConvoPair = messageArray.find(
-    (c) => c.channelId === message.channel.id
-  );
-  if (channelConvoPair.conversation.length >= process.env.MESSAGE_AMOUNT) {
-    channelConvoPair.conversation.shift();
-  }
-  //convert the array into a string, because it's faster than sending each individual message via the api
-  const contentText = channelConvoPair.conversation.join("\n");
-
-  //strings being put into a single message cannot exceed 2000 characters
-  if (contentText.length > 1999) {
-    return contentText.slice(contentText.length - 1999);
-  }
-  return contentText;
+    const maxEntries = process.env.MESSAGE_AMOUNT; // Default and fallback
+    const maxLength = 2000; // Maximum length for a Discord message
+    // Find the conversation pair for the current channel
+    const channelConvoPair = messageArray.find(c => c.channelId === message.channel.id);
+    if (!channelConvoPair) {
+        console.error(`No conversation pair found for channel: ${message.channel.id}`);
+        return ''; // Early return if no conversation pair exists
+    }
+    // Manage conversation size
+    if (channelConvoPair.conversation.length >= maxEntries) {
+        channelConvoPair.conversation.shift(); // Remove the oldest message
+    }
+    // Prepare the conversation text
+    let contentText = channelConvoPair.conversation.join("\n");
+    // Ensure the content text does not exceed the Discord message limit
+    if (contentText.length > maxLength) {
+        contentText = contentText.slice(-maxLength);
+    }
+    return contentText;
 }
 
 //Add discord message to a thread
-async function addMessagesToThread(contentText, thread, openai) {
+async function addMessagesToThread(contentText, threadId, openai) {
   // add conversation to a thread
   try {
-    const run = await openai.beta.threads.messages.create(thread.id, {
+    const run = await openai.beta.threads.messages.create(threadId, {
       role: "user",
       content: contentText,
     });
@@ -115,9 +85,10 @@ async function addMessagesToThread(contentText, thread, openai) {
 async function addResultsToRun(contentText, openai, threadId, toolId, runId) {
   // if the toolId is populated, that means this is a tool call and we need
   // to add the results back to the thread
-  if (contentText.length > 1999) {
-    contentText = contentText.slice(contentText.length - 1999);
-  }
+  const maxLength = 2000; // Maximum length for a Discord message
+  if (contentText.length > maxLength) {
+        contentText = contentText.slice(-maxLength);
+    }
   try {
     const run = await openai.beta.threads.runs.submitToolOutputsAndPoll(
       threadId,
@@ -137,77 +108,56 @@ async function addResultsToRun(contentText, openai, threadId, toolId, runId) {
   }
 }
 
-//polled response
 async function runThread(message, thread, openai, client, mentionedUser) {
-  //run the thread
-  let run = await openai.beta.threads.runs.createAndPoll(thread.id, {
-    assistant_id: myAssistant.id,
-    additional_instructions: process.env.BOT_INSTRUCTIONS, //reinforce some behaviors in the bot that aren't working right
-  });
-  if (run.status === "requires_action") {
-    //this runs if there's a tool/function call, so we gotta do work before returning the results
+    // Run the thread
+    let run = await openai.beta.threads.runs.createAndPoll(thread.id, {
+        assistant_id: myAssistant.id,
+        additional_instructions: process.env.BOT_INSTRUCTIONS,
+    });
+
+    if (run.status === "requires_action") {
+        await handleRequiresAction(message, run, openai, client);
+    } else if (run.status === "completed") {
+        await handleCompletedRun(message, run, client, openai, mentionedUser);
+    }
+}
+
+async function handleRequiresAction(message, run, openai, client) {
     console.log("Requires Action");
     message.channel.sendTyping();
-    toolCallId = run.required_action.submit_tool_outputs.tool_calls[0].id;
-    //get the function results as a string
-    contentText = await functionHandler.executeFunction(
-      run.required_action.submit_tool_outputs.tool_calls[0],
-      message,
-      client,
-      openai
-    );
-
-    //Add the results from the function to the run and run it again
-    const newRun = await addResultsToRun(
-      contentText,
-      openai,
-      thread.id,
-      toolCallId,
-      run.id
-    );
+    const toolCall = run.required_action.submit_tool_outputs.tool_calls[0];
+    const contentText = await functionHandler.executeFunction(toolCall, message, client, openai);
+    const newRun = await addResultsToRun(contentText, openai, run.thread_id, toolCall.id, run.id);
 
     if (newRun.status === "completed") {
-      console.log("Completed Request");
-      try {
-        const messages = await openai.beta.threads.messages.list(thread.id);
-        response = messages.data[0].content[0].text.value;
-        //if this is a welcome message, mentionedUser will be populated
-        if (mentionedUser.username === undefined) {
-          //you have to take out a lot of regular "bot-isms" to make it look normal
-          message.reply(
-            response
-              .replace(client.user.username + ": ", "")
-              .replace(/【.*?】/gs, "")
-              .replace("Ah, ", "")
-              .replace(/<.*?>/gs, "")
-          );
-        } else {
-          const messages = await openai.beta.threads.messages.list(thread.id);
-          response = messages.data[0].content[0].text.value;
-          await channel.send(`<@${mentionedUser.userId}>! ${response}`);
-        }
-      } catch (error) {
-        console.error("Error running the thread: ", error);
-      }
+        console.log("Completed Request");
+        await sendResponse(message, newRun.thread_id, openai, client);
     }
-  }
-  if (run.status === "completed") {
+}
+
+async function handleCompletedRun(message, run, client, openai, mentionedUser) {
     message.channel.sendTyping();
-    //capture the thread and shove it into a reply
+    await sendResponse(message, run.thread_id, openai, client, mentionedUser);
+}
+
+async function sendResponse(message, threadId, openai, client, mentionedUser) {
     try {
-      const messages = await openai.beta.threads.messages.list(run.thread_id);
-      response = messages.data[0].content[0].text.value;
-      //print to discord only the last message
-      message.reply(
-        response
-          .replace(client.user.username + ": ", "")
-          .replace(/【.*?】/gs, "")
-          .replace("Ah, ", "")
-      ); //the way this works, sometimes it responds in the third person. This removes that.
+        const messages = await openai.beta.threads.messages.list(threadId);
+        let response = messages.data[0].content[0].text.value;
+        response = response.replace(client.user.username + ": ", "")
+                           .replace(/【.*?】/gs, "")
+                           .replace("Ah, ", "")
+                           .replace(/<.*?>/gs, "");
+
+        if (mentionedUser && mentionedUser.username !== undefined) {
+            await message.channel.send(`<@${mentionedUser.userId}>! ${response}`);
+        } else {
+            await message.reply(response);
+        }
     } catch (error) {
-      console.error("Error running the thread: ", error);
+        console.error("Error running the thread: ", error);
+        await message.reply("Sorry, there was an error processing your request.");
     }
-  }
 }
 
 module.exports = {
@@ -216,5 +166,4 @@ module.exports = {
   addMessagesToThread,
   runThread,
   processPreviosConvo,
-  processWelcomeMessage,
 };
