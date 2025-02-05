@@ -1,6 +1,5 @@
-
 // Require the necessary discord.js classes
-const {Client, GatewayIntentBits} = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 // Initialize dotenv
 const dotenv = require("dotenv");
 // Require openai
@@ -15,7 +14,9 @@ let envFile = ".env";
 if (args.length === 1) {
   envFile = `${args[0]}`;
 }
-dotenv.config({ path: envFile });
+dotenv.config({
+  path: envFile,
+});
 
 // Setup OpenAI
 const openai = new OpenAI(process.env.OPENAI_API_KEY);
@@ -27,7 +28,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildPresences
+    GatewayIntentBits.GuildPresences,
   ],
 });
 
@@ -48,8 +49,11 @@ threadArray = [];
 messageArray = [];
 
 //populate the messageArray as an array of messages grouped by the ChannelId as a key
-channelIds.forEach(channel => {
-  messageArray.push({channelId: channel, conversation: []});
+channelIds.forEach((channel) => {
+  messageArray.push({
+    channelId: channel,
+    conversation: [],
+  });
 });
 
 // Retrieve the bot assistant (read: personality)
@@ -58,7 +62,7 @@ async function retrieveAssistant() {
   myAssistant = await openai.beta.assistants.retrieve(
     process.env.ASSISTANT_KEY
   );
-};
+}
 
 //---------------------------------------------------------------------------------//
 
@@ -68,14 +72,23 @@ retrieveAssistant();
 //Event Listener: login
 client.on("ready", () => {
   //preload some channelIDs and Names
-  channelIds.forEach(channel => {
-    channelObj = client.channels.cache.get(channel)
-    channelIdAndName.push({channelName: channelObj.name, channelId: channelObj.id});
+  channelIds.forEach((channel) => {
+    channelObj = client.channels.cache.get(channel);
+    channelIdAndName.push({
+      channelName: channelObj.name,
+      channelId: channelObj.id,
+    });
   });
 
   //run the vector checker to see if we need to update the vector store for the bot's background knowledge
-  const checkChatLogs = setInterval(() => vectorHandler.refreshChatLogs(channelIdAndName, openai, client), 10800000);
-  const checkUsersOnline = setInterval(() => vectorHandler.refreshUserList(openai, client), 43200000);
+  const checkChatLogs = setInterval(
+    () => vectorHandler.refreshChatLogs(channelIdAndName, openai, client),
+    10800000
+  );
+  const checkUsersOnline = setInterval(
+    () => vectorHandler.refreshUserList(openai, client),
+    43200000
+  );
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
@@ -84,8 +97,8 @@ client.on("messageCreate", async (message) => {
   //ignore if the message channel is not one that's being listened to
   if (channelIds.includes(message.channelId)) {
     // Ignore DMs
-    if (!message.guild){
-      return; 
+    if (!message.guild) {
+      return;
     }
 
     // Don't reply to system messages
@@ -102,10 +115,16 @@ client.on("messageCreate", async (message) => {
       message.channel.sendTyping();
 
       //process the message so that it comes out nice and neat for use
-      const newMessage = threadHandler.processMessageToSend(message, mentionRegex);
+      const newMessage = threadHandler.processMessageToSend(
+        message,
+        mentionRegex
+      );
 
       //combine the convo
-      const previosConvo = threadHandler.processPreviosConvo(messageArray, message);
+      const previosConvo = threadHandler.processPreviosConvo(
+        messageArray,
+        message
+      );
 
       //put the conversation and the latest message in an array
       const combinedMessages = [previosConvo, newMessage];
@@ -115,11 +134,11 @@ client.on("messageCreate", async (message) => {
 
       //add the message to the thread
       for (const message of combinedMessages) {
-        await threadHandler.addMessagesToThread(message, thread, openai); 
+        await threadHandler.addMessagesToThread(message, thread, openai);
       }
 
       //poll, run, get response, and send it to the discord channel
-      await threadHandler.runThread(message, thread, openai, client); 
+      await threadHandler.runThread(message, thread, openai, client);
       return;
     } else {
       //FOR ALL OTHER MESSAGES
