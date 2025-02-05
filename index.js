@@ -1,22 +1,10 @@
-// Require the necessary node classes
-const fs = require("node:fs");
-const path = require("node:path");
-const util = require('util');
+
 // Require the necessary discord.js classes
-const {
-  Client,
-  Collection,
-  Events,
-  GatewayIntentBits,
-  PermissionFlagsBits,
-  ChannelType,
-} = require("discord.js");
+const {Client, GatewayIntentBits} = require("discord.js");
 // Initialize dotenv
 const dotenv = require("dotenv");
 // Require openai
-const { Configuration, OpenAI } = require("openai");
-const { threadId } = require("node:worker_threads");
-const { isNull } = require("node:util");
+const { OpenAI } = require("openai");
 // Require global functions
 const vectorHandler = require("./vector-handler.js");
 const threadHandler = require("./thread-handler");
@@ -106,17 +94,7 @@ client.on("messageCreate", async (message) => {
     }
 
     //welcome a new member in the welcome channel. I wrote this at midnight. TODO: refactor for beauty later
-    const mentionedUser = message.mentions.users;
-    const thread = await openai.beta.threads.create();
-    const welcomeInstructions = process.env.WELCOME_INSTRUCTION;
-    const welcomeInstructions2 = process.env.WELCOME_INSTRUCTION2;
-    if (message.channelId === process.env.WELCOME_CHANNEL_ID && message.content.includes(process.env.WELCOME_MESSAGE)){
-      await threadHandler.addMessagesToThread(`${welcomeInstructions}: USER: ${mentionedUser}`, thread, openai); 
-      await threadHandler.runThread(message, thread, openai, client, mentionedUser); 
-    } else if (message.channelId === process.env.WELCOME_CHANNEL_ID && message.content.includes(process.env.WELCOME_MESSAGE2)){
-      await threadHandler.addMessagesToThread(`${welcomeInstructions2}: USER: ${mentionedUser}`, thread, openai); 
-      await threadHandler.runThread(message, thread, openai, client, mentionedUser); 
-    }
+    threadHandler.processWelcomeMessage(message, openai, client);
 
     //if the user mentions the bot or replies to the bot
     if (message.mentions.users.has(client.user.id)) {
@@ -145,7 +123,7 @@ client.on("messageCreate", async (message) => {
       return;
     } else {
       //FOR ALL OTHER MESSAGES
-      threadHandler.processMessage(message, messageArray, mentionRegex);
+      threadHandler.formatMessage(message, messageArray, mentionRegex);
     }
   } else {
     return;
